@@ -3,6 +3,8 @@ import akshare as ak
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Optional
+import asyncio
+import concurrent.futures
 
 router = APIRouter(prefix="/api/market", tags=["market"])
 
@@ -130,23 +132,48 @@ async def get_industry_stocks(industry: Optional[str] = None):
 async def get_market_breadth():
     """Get market breadth indicators (advance/decline)"""
     try:
-        # Get A-share market data
-        market_data = ak.stock_zh_a_spot_em()
+        # Get A-share market data - 增加超时机制
+        # 使用线程池运行同步阻塞操作
+        def fetch_market_data():
+            return ak.stock_zh_a_spot_em()
+        
+        # 设置超时为30秒
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            loop = asyncio.get_event_loop()
+            try:
+                # 运行在线程中并设置超时
+                market_data = await asyncio.wait_for(
+                    loop.run_in_executor(executor, fetch_market_data),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                # 超时处理
+                raise HTTPException(status_code=504, detail="Market data request timed out")
+        
+        # 确保数据有效
+        if market_data is None or market_data.empty:
+            raise HTTPException(status_code=500, detail="Empty market data returned")
+        
+        # 处理涨跌数据前确保列名正确
+        change_column = '涨跌幅'
+        if change_column not in market_data.columns:
+            # 尝试查找替代列名
+            possible_columns = [col for col in market_data.columns if '涨跌' in col or 'change' in col.lower()]
+            if possible_columns:
+                change_column = possible_columns[0]
+            else:
+                raise HTTPException(status_code=500, detail="Cannot find price change column in market data")
         
         # Count advancing and declining stocks
-        advancing = len(market_data[market_data['涨跌幅'] > 0])
-        declining = len(market_data[market_data['涨跌幅'] < 0])
-        unchanged = len(market_data[market_data['涨跌幅'] == 0])
-        limit_up = len(market_data[market_data['涨跌幅'] >= 9.9])
-        limit_down = len(market_data[market_data['涨跌幅'] <= -9.9])
+        advancing = len(market_data[market_data[change_column] > 0])
+        declining = len(market_data[market_data[change_column] < 0])
+        unchanged = len(market_data[market_data[change_column] == 0])
+        limit_up = len(market_data[market_data[change_column] >= 9.9])
+        limit_down = len(market_data[market_data[change_column] <= -9.9])
         
-        # Calculate advance-decline ratio
+        # 安全计算，避免被零除错误
         ad_ratio = advancing / declining if declining > 0 else float('inf')
-        
-        # Calculate advance-decline line (simplified)
         ad_line = advancing - declining
-        
-        # Calculate market breadth indicator
         breadth = advancing / (advancing + declining) * 100 if (advancing + declining) > 0 else 50
         
         return {
@@ -160,6 +187,10 @@ async def get_market_breadth():
             "breadth": float(breadth)
         }
     except Exception as e:
+        # 更详细的错误信息
+        import traceback
+        error_msg = f"Error calculating market breadth: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)  # 打印到日志
         raise HTTPException(status_code=500, detail=f"Error calculating market breadth: {str(e)}")
 
 @router.get("/news")
