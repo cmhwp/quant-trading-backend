@@ -74,14 +74,17 @@ async def get_stock_list(limit: int = 50):
 @app.get("/api/indices")
 async def get_indices():
     try:
-        # Get major indices data
-        indices = ak.stock_zh_index_spot()
+        # Get major indices data using the updated function
+        indices = ak.stock_zh_index_spot_em()
         
-        # Select main indices
+        # Select main indices - updating to match new column names
         main_indices = indices[indices['代码'].isin(['000001', '399001', '000300'])].copy()
-        main_indices.columns = ['code', 'name', 'price', 'change_percent', 'volume', 'turnover']
+        main_indices.columns = ['index', 'code', 'name', 'price', 'change_percent', 'change_amount', 'volume', 'turnover', 'amplitude', 'high', 'low', 'open', 'prev_close', 'volume_ratio']
         
-        return main_indices.to_dict(orient='records')
+        # Select only the columns we need
+        result_indices = main_indices[['code', 'name', 'price', 'change_percent', 'volume', 'turnover']]
+        
+        return result_indices.to_dict(orient='records')
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error fetching indices: {str(e)}")
 
